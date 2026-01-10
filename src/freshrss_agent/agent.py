@@ -23,13 +23,15 @@ from .tools import TOOLS, ToolExecutor
 class FreshRSSAgent:
     """FreshRSS Agent with tool use capabilities."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, verbose: bool = False):
         """Initialize the agent.
 
         Args:
             settings: Application settings
+            verbose: If True, print status messages during processing
         """
         self.settings = settings
+        self.verbose = verbose
         self.client = Anthropic(api_key=settings.anthropic_api_key)
         self.freshrss_client = FreshRSSClient(
             api_url=settings.freshrss_api_url,
@@ -53,6 +55,11 @@ class FreshRSSAgent:
             "then process according to user needs."
         )
 
+    def _print_status(self, message: str) -> None:
+        """Print status message if verbose mode is enabled."""
+        if self.verbose:
+            print(f"\033[90m{message}\033[0m", flush=True)
+
     def chat(self, user_message: str) -> str:
         """Process a user message and return the response.
 
@@ -74,6 +81,7 @@ class FreshRSSAgent:
         # Agent loop
         while True:
             # Call Claude
+            self._print_status("⏳ Thinking...")
             response = self._call_claude()
 
             # Add assistant response to history
@@ -126,6 +134,7 @@ class FreshRSSAgent:
         for block in content:
             if isinstance(block, ToolUseBlock):
                 # Execute the tool
+                self._print_status(f"🔧 Calling tool: {block.name}...")
                 result = self.tool_executor.execute(block.name, block.input)
 
                 # Format as tool_result

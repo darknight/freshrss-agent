@@ -111,7 +111,7 @@ Examples:
         sys.exit(1)
 
     # Create and run agent
-    with FreshRSSAgent(settings) as agent:
+    with FreshRSSAgent(settings, verbose=True) as agent:
         if args.command == "digest":
             output_format = "markdown" if args.markdown else "text"
             daily_digest(agent, output_format)
