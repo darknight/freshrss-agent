@@ -22,6 +22,8 @@ class Settings(BaseSettings):
 
     # MCP Server (Phase 2)
     mcp_server_url: str = "http://localhost:8080/mcp"
+    mcp_auth_token: str | None = None
+    use_mcp: bool = False
 
     # Agent settings
     model: str = "claude-sonnet-4-20250514"

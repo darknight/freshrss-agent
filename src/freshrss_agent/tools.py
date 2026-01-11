@@ -2,10 +2,14 @@
 
 This module defines the tools available to the Agent and provides
 the execution logic for each tool.
+
+Phase 2 additions:
+- MCPToolExecutor: Execute tools via MCP protocol
+- Dynamic tool discovery from MCP server
 """
 
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from .freshrss_client import Article, FreshRSSClient
 
@@ -73,6 +77,7 @@ TOOLS = [
 # Tool Executor
 # =============================================================================
 
+
 class ToolExecutor:
     """Executes tools with FreshRSS client."""
 
@@ -118,21 +123,27 @@ class ToolExecutor:
         # Format for Claude
         result = []
         for article in articles:
-            result.append({
-                "id": article.id,
-                "title": article.title,
-                "feed": article.feed_title,
-                "author": article.author,
-                "url": article.url,
-                "content_preview": article.content[:500] + "..."
-                if len(article.content) > 500
-                else article.content,
-            })
+            result.append(
+                {
+                    "id": article.id,
+                    "title": article.title,
+                    "feed": article.feed_title,
+                    "author": article.author,
+                    "url": article.url,
+                    "content_preview": article.content[:500] + "..."
+                    if len(article.content) > 500
+                    else article.content,
+                }
+            )
 
-        return json.dumps({
-            "count": len(result),
-            "articles": result,
-        }, ensure_ascii=False, indent=2)
+        return json.dumps(
+            {
+                "count": len(result),
+                "articles": result,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     def _mark_articles_read(self, tool_input: dict[str, Any]) -> str:
         """Mark articles as read."""
@@ -141,10 +152,12 @@ class ToolExecutor:
             return json.dumps({"success": False, "error": "No article IDs provided"})
 
         success = self.client.mark_as_read(article_ids)
-        return json.dumps({
-            "success": success,
-            "marked_count": len(article_ids) if success else 0,
-        })
+        return json.dumps(
+            {
+                "success": success,
+                "marked_count": len(article_ids) if success else 0,
+            }
+        )
 
     def _summarize_articles(self, tool_input: dict[str, Any]) -> str:
         """Return cached articles for summarization.
@@ -155,22 +168,103 @@ class ToolExecutor:
         style = tool_input.get("style", "brief")
 
         if not self._cached_articles:
-            return json.dumps({
-                "error": "No articles cached. Please call get_unread_articles first."
-            })
+            return json.dumps(
+                {"error": "No articles cached. Please call get_unread_articles first."}
+            )
 
         # Return full content for summarization
         articles_data = []
         for article in self._cached_articles:
-            articles_data.append({
-                "title": article.title,
-                "feed": article.feed_title,
-                "content": article.content,
-            })
+            articles_data.append(
+                {
+                    "title": article.title,
+                    "feed": article.feed_title,
+                    "content": article.content,
+                }
+            )
 
         instruction = f"Please summarize these {len(articles_data)} articles in {style} style."
-        return json.dumps({
-            "style": style,
-            "articles": articles_data,
-            "instruction": instruction,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "style": style,
+                "articles": articles_data,
+                "instruction": instruction,
+            },
+            ensure_ascii=False,
+        )
+
+
+# =============================================================================
+# Tool Executor Protocol (for dual-mode support)
+# =============================================================================
+
+
+class ToolExecutorProtocol(Protocol):
+    """Protocol for tool executors (direct API or MCP)."""
+
+    def execute(self, tool_name: str, tool_input: dict[str, Any]) -> str:
+        """Execute a tool and return the result."""
+        ...
+
+
+# =============================================================================
+# MCP Tool Executor (Phase 2)
+# =============================================================================
+
+
+class MCPToolExecutor:
+    """Executes tools via MCP protocol.
+
+    This executor wraps an MCP client and provides synchronous
+    tool execution for use with the Agent.
+    """
+
+    def __init__(self, mcp_client):
+        """Initialize with MCP client.
+
+        Args:
+            mcp_client: Connected FreshRSSMCPClient instance
+        """
+        self.mcp_client = mcp_client
+        self._cached_articles: list[dict] = []
+
+    async def execute_async(self, tool_name: str, tool_input: dict[str, Any]) -> str:
+        """Execute a tool asynchronously via MCP.
+
+        Args:
+            tool_name: Name of the tool to execute
+            tool_input: Tool input parameters
+
+        Returns:
+            JSON string with the result
+        """
+        try:
+            result = await self.mcp_client.call_tool(tool_name, tool_input)
+
+            # Cache articles for summarization support
+            if tool_name == "get_unread_articles":
+                try:
+                    data = json.loads(result)
+                    self._cached_articles = data.get("articles", [])
+                except json.JSONDecodeError:
+                    pass
+
+            return result
+
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+
+async def get_tools_from_mcp(mcp_client) -> list[dict]:
+    """Fetch tool definitions from MCP Server and convert to Anthropic format.
+
+    Args:
+        mcp_client: Connected FreshRSSMCPClient instance
+
+    Returns:
+        List of tools in Anthropic format
+    """
+    from .mcp_client import convert_mcp_tools_to_anthropic
+
+    mcp_tools = await mcp_client.list_tools()
+    return convert_mcp_tools_to_anthropic(mcp_tools)

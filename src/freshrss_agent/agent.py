@@ -10,35 +10,62 @@ Key learning points:
 - Agent Loop is the core pattern of AI Agents
 - stop_reason determines whether to continue the loop
 - Conversation history must be properly maintained
+
+Phase 2 additions:
+- Support for MCP mode (use_mcp=True)
+- Async agent loop for MCP tool execution
+- Dynamic tool discovery from MCP server
 """
+
+import asyncio
 
 from anthropic import Anthropic
 from anthropic.types import ContentBlock, Message, TextBlock, ToolUseBlock
 
 from .config import Settings
 from .freshrss_client import FreshRSSClient
-from .tools import TOOLS, ToolExecutor
+from .mcp_client import FreshRSSMCPClient
+from .tools import TOOLS, MCPToolExecutor, ToolExecutor, get_tools_from_mcp
 
 
 class FreshRSSAgent:
-    """FreshRSS Agent with tool use capabilities."""
+    """FreshRSS Agent with tool use capabilities.
 
-    def __init__(self, settings: Settings, verbose: bool = False):
+    Supports two modes:
+    - Direct API mode (use_mcp=False): Calls FreshRSS API directly
+    - MCP mode (use_mcp=True): Calls FreshRSS via MCP protocol
+    """
+
+    def __init__(self, settings: Settings, verbose: bool = False, use_mcp: bool | None = None):
         """Initialize the agent.
 
         Args:
             settings: Application settings
             verbose: If True, print status messages during processing
+            use_mcp: If True, use MCP mode. If None, use settings.use_mcp
         """
         self.settings = settings
         self.verbose = verbose
+        self.use_mcp = use_mcp if use_mcp is not None else settings.use_mcp
         self.client = Anthropic(api_key=settings.anthropic_api_key)
-        self.freshrss_client = FreshRSSClient(
-            api_url=settings.freshrss_api_url,
-            username=settings.freshrss_username,
-            password=settings.freshrss_api_password,
-        )
-        self.tool_executor = ToolExecutor(self.freshrss_client)
+
+        # Mode-specific initialization
+        self._mcp_client: FreshRSSMCPClient | None = None
+        self._mcp_tool_executor: MCPToolExecutor | None = None
+        self._tools: list[dict] = TOOLS  # Default tools, may be updated for MCP
+
+        if not self.use_mcp:
+            # Direct API mode
+            self.freshrss_client = FreshRSSClient(
+                api_url=settings.freshrss_api_url,
+                username=settings.freshrss_username,
+                password=settings.freshrss_api_password,
+            )
+            self.tool_executor = ToolExecutor(self.freshrss_client)
+        else:
+            # MCP mode - client will be initialized when connecting
+            self.freshrss_client = None
+            self.tool_executor = None
 
         # Conversation history
         self.messages: list[dict] = []
@@ -60,8 +87,38 @@ class FreshRSSAgent:
         if self.verbose:
             print(f"\033[90m{message}\033[0m", flush=True)
 
+    async def connect_mcp(self) -> None:
+        """Connect to MCP server (MCP mode only).
+
+        This must be called before using the agent in MCP mode.
+        """
+        if not self.use_mcp:
+            return
+
+        self._print_status(f"🔌 Connecting to MCP Server: {self.settings.mcp_server_url}")
+        self._mcp_client = FreshRSSMCPClient(
+            self.settings.mcp_server_url,
+            auth_token=self.settings.mcp_auth_token,
+        )
+        await self._mcp_client.connect()
+        self._mcp_tool_executor = MCPToolExecutor(self._mcp_client)
+
+        # Discover tools from MCP server
+        self._print_status("📋 Discovering tools from MCP Server...")
+        self._tools = await get_tools_from_mcp(self._mcp_client)
+        self._print_status(f"✅ Found {len(self._tools)} tools")
+
+    async def disconnect_mcp(self) -> None:
+        """Disconnect from MCP server."""
+        if self._mcp_client:
+            await self._mcp_client.close()
+            self._mcp_client = None
+            self._mcp_tool_executor = None
+
     def chat(self, user_message: str) -> str:
-        """Process a user message and return the response.
+        """Process a user message and return the response (sync version).
+
+        For MCP mode, use chat_async() instead.
 
         This implements the Agent Loop pattern:
         1. Add user message to history
@@ -75,6 +132,10 @@ class FreshRSSAgent:
         Returns:
             The agent's text response
         """
+        if self.use_mcp:
+            # In MCP mode, run the async version
+            return asyncio.get_event_loop().run_until_complete(self.chat_async(user_message))
+
         # Add user message to history
         self.messages.append({"role": "user", "content": user_message})
 
@@ -106,6 +167,51 @@ class FreshRSSAgent:
                 # Unexpected stop reason (max_tokens, etc.)
                 return f"[Agent stopped: {response.stop_reason}]"
 
+    async def chat_async(self, user_message: str) -> str:
+        """Process a user message and return the response (async version).
+
+        This is the async version that supports MCP mode.
+
+        Args:
+            user_message: The user's input message
+
+        Returns:
+            The agent's text response
+        """
+        # Add user message to history
+        self.messages.append({"role": "user", "content": user_message})
+
+        # Agent loop
+        while True:
+            # Call Claude
+            self._print_status("⏳ Thinking...")
+            response = self._call_claude()
+
+            # Add assistant response to history
+            self.messages.append({"role": "assistant", "content": response.content})
+
+            # Check stop reason
+            if response.stop_reason == "end_turn":
+                # Claude is done, extract text response
+                return self._extract_text(response.content)
+
+            elif response.stop_reason == "tool_use":
+                # Claude wants to use tools
+                if self.use_mcp:
+                    tool_results = await self._process_tool_calls_async(response.content)
+                else:
+                    tool_results = self._process_tool_calls(response.content)
+
+                # Add tool results to history
+                self.messages.append({"role": "user", "content": tool_results})
+
+                # Continue the loop
+                continue
+
+            else:
+                # Unexpected stop reason (max_tokens, etc.)
+                return f"[Agent stopped: {response.stop_reason}]"
+
     def _call_claude(self) -> Message:
         """Make an API call to Claude.
 
@@ -116,12 +222,12 @@ class FreshRSSAgent:
             model=self.settings.model,
             max_tokens=self.settings.max_tokens,
             system=self.system_prompt,
-            tools=TOOLS,
+            tools=self._tools,  # Use dynamic tool list
             messages=self.messages,
         )
 
     def _process_tool_calls(self, content: list[ContentBlock]) -> list[dict]:
-        """Process tool use requests and return results.
+        """Process tool use requests and return results (sync version).
 
         Args:
             content: Response content blocks from Claude
@@ -138,11 +244,41 @@ class FreshRSSAgent:
                 result = self.tool_executor.execute(block.name, block.input)
 
                 # Format as tool_result
-                results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result,
-                })
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    }
+                )
+
+        return results
+
+    async def _process_tool_calls_async(self, content: list[ContentBlock]) -> list[dict]:
+        """Process tool use requests and return results (async version for MCP).
+
+        Args:
+            content: Response content blocks from Claude
+
+        Returns:
+            List of tool_result blocks
+        """
+        results = []
+
+        for block in content:
+            if isinstance(block, ToolUseBlock):
+                # Execute the tool via MCP
+                self._print_status(f"🔧 Calling tool via MCP: {block.name}...")
+                result = await self._mcp_tool_executor.execute_async(block.name, block.input)
+
+                # Format as tool_result
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    }
+                )
 
         return results
 
@@ -166,8 +302,27 @@ class FreshRSSAgent:
         self.messages = []
 
     def close(self) -> None:
-        """Clean up resources."""
-        self.freshrss_client.close()
+        """Clean up resources (sync version)."""
+        if self.freshrss_client:
+            self.freshrss_client.close()
+        if self._mcp_client:
+            # Run async cleanup in sync context
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If in async context, schedule but don't wait
+                    asyncio.ensure_future(self.disconnect_mcp())
+                else:
+                    loop.run_until_complete(self.disconnect_mcp())
+            except RuntimeError:
+                # No event loop, create one
+                asyncio.run(self.disconnect_mcp())
+
+    async def aclose(self) -> None:
+        """Clean up resources (async version)."""
+        if self.freshrss_client:
+            self.freshrss_client.close()
+        await self.disconnect_mcp()
 
     def __enter__(self):
         return self
@@ -175,10 +330,21 @@ class FreshRSSAgent:
     def __exit__(self, *args):
         self.close()
 
+    async def __aenter__(self):
+        """Async context manager entry."""
+        if self.use_mcp:
+            await self.connect_mcp()
+        return self
+
+    async def __aexit__(self, *args):
+        """Async context manager exit."""
+        await self.aclose()
+
 
 # =============================================================================
 # Standalone Agent Loop Example
 # =============================================================================
+
 
 def simple_agent_loop_example():
     """
@@ -213,6 +379,7 @@ def simple_agent_loop_example():
     # Tool execution
     def execute_tool(name: str, input: dict) -> str:
         import datetime
+
         if name == "get_time":
             return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         elif name == "add_numbers":
@@ -267,11 +434,13 @@ def simple_agent_loop_example():
                     print(f"Executing tool: {block.name}({block.input})")
                     result = execute_tool(block.name, block.input)
                     print(f"Result: {result}")
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result,
-                    })
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        }
+                    )
 
             # Add tool results to history
             messages.append({"role": "user", "content": tool_results})
