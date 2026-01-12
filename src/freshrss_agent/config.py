@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     mcp_auth_token: str | None = None
     use_mcp: bool = False
 
+    # MCP Server Command (Step 4 - Agent SDK stdio mode)
+    # If set, Agent SDK will launch this command as subprocess
+    mcp_server_command: str | None = None
+
     # Agent settings
     model: str = "claude-sonnet-4-20250514"
     max_tokens: int = 4096

@@ -13,6 +13,11 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
+[project.optional-dependencies]
+agent-sdk = [
+    "claude-agent-sdk>=0.1.0",
+]
+
 [project.scripts]
 freshrss-agent = "freshrss_agent.main:main"
 

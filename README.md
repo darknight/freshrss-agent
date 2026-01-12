@@ -5,14 +5,17 @@ A learning project for understanding AI Agent concepts through FreshRSS integrat
 ## Learning Path
 
 ```
-Step 1: Understand Tool Use principles
+Step 1: Understand Tool Use principles           ✅
         ↓
-Step 2: Hand-write Agent Loop (using Anthropic SDK)
+Step 2: Hand-write Agent Loop (Anthropic SDK)    ✅
         ↓
-Step 3: Understand MCP protocol
+Step 3: Understand MCP protocol                  ✅
         ↓
-Step 4: Use Claude Agent SDK (understand what it does for you)
+Step 4: Use Claude Agent SDK                     ✅
 ```
+
+The goal is to understand HOW agents work by building one from scratch,
+then use the Agent SDK for production applications.
 
 ## Quick Start
 
@@ -39,13 +42,28 @@ uv run python examples/01_basic_tool_use.py
 
 # Example 2: Agent Loop
 uv run python examples/02_simple_agent_loop.py
+
+# Example 3: MCP client integration
+uv run python examples/03_mcp_client.py
+
+# Example 4-5: Claude Agent SDK (requires extra dependency)
+uv sync --extra agent-sdk
+uv run python examples/04_agent_sdk_basics.py
+uv run python examples/05_agent_sdk_custom_tools.py
 ```
 
 ### Run Agent
 
 ```bash
-# Interactive mode
+# Interactive mode (Direct API - hand-written agent loop)
 uv run freshrss-agent
+
+# Interactive mode (MCP - uses MCP protocol)
+uv run freshrss-agent --mcp
+
+# Interactive mode (Agent SDK - uses Claude Agent SDK)
+uv sync --extra agent-sdk  # Install SDK first
+uv run freshrss-agent --sdk
 
 # Generate daily digest
 uv run freshrss-agent digest
@@ -64,13 +82,21 @@ freshrss-agent/
 ├── src/freshrss_agent/
 │   ├── __init__.py
 │   ├── main.py              # CLI entry point
-│   ├── agent.py             # Agent loop core implementation
+│   ├── agent.py             # Hand-written agent loop (Phase 1-2)
+│   ├── agent_sdk.py         # Agent SDK implementation (Step 4)
 │   ├── tools.py             # Tool definitions and execution logic
 │   ├── freshrss_client.py   # FreshRSS API client
+│   ├── mcp_client.py        # MCP protocol client (Phase 2)
 │   └── config.py            # Configuration management
-└── examples/
-    ├── 01_basic_tool_use.py     # Learn Tool Use basics
-    └── 02_simple_agent_loop.py  # Learn Agent Loop
+├── examples/
+│   ├── 01_basic_tool_use.py         # Learn Tool Use basics
+│   ├── 02_simple_agent_loop.py      # Learn Agent Loop
+│   ├── 03_mcp_client.py             # Learn MCP client integration
+│   ├── 04_agent_sdk_basics.py       # Learn Claude Agent SDK basics
+│   └── 05_agent_sdk_custom_tools.py # Learn custom tools and hooks
+└── docs/
+    ├── mcp-agent-architecture.md    # Phase 2: MCP architecture deep dive
+    └── agent-sdk-architecture.md    # Step 4: Agent SDK architecture deep dive
 ```
 
 ## Core Concepts
@@ -108,11 +134,14 @@ while True:
 | `FRESHRSS_API_URL` | FreshRSS API URL |
 | `FRESHRSS_USERNAME` | FreshRSS username |
 | `FRESHRSS_API_PASSWORD` | FreshRSS API password |
+| `MCP_SERVER_URL` | MCP server URL (Phase 2) |
+| `MCP_AUTH_TOKEN` | MCP authentication token (optional) |
+| `USE_MCP` | Enable MCP mode (true/false) |
 
 ## Implementation Phases
 
 - [x] Phase 1: Basic Agent (direct FreshRSS API calls)
-- [ ] Phase 2: MCP client integration
+- [x] Phase 2: MCP client integration
 - [ ] Phase 3: Daily digest automation
 
 ## License
