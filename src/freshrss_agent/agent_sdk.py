@@ -134,12 +134,13 @@ class FreshRSSAgentSDK:
         # The SDK will connect to this server and discover tools dynamically
         self._mcp_config = self._build_mcp_config()
 
-        # Build options - note: NO allowed_tools specified!
-        # SDK will discover tools from MCP Server automatically
+        # Build options
+        # IMPORTANT: Set tools=[] to disable built-in Claude Code tools (Bash, Glob, etc.)
+        # This ensures only MCP server tools are available
         self._options = ClaudeAgentOptions(
             system_prompt=self.system_prompt,
             mcp_servers={"freshrss": self._mcp_config},
-            # Don't specify allowed_tools - let SDK discover from MCP Server
+            tools=[],  # Disable all built-in tools, only use MCP server tools
             max_turns=10,
         )
 
@@ -167,7 +168,8 @@ class FreshRSSAgentSDK:
         # This connects to an already-running MCP server
         if self.settings.mcp_server_url:
             self._print_status(f"📡 Using HTTP MCP: {self.settings.mcp_server_url}")
-            config = {
+            config: dict = {
+                "type": "sse",  # SDK requires explicit type for URL-based configs
                 "url": self.settings.mcp_server_url,
             }
             if self.settings.mcp_auth_token:

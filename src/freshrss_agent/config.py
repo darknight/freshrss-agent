@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     model: str = "claude-sonnet-4-20250514"
     max_tokens: int = 4096
 
+    # Slack Integration (Phase 3)
+    slack_webhook_url: str | None = None
+
 
 def get_settings() -> Settings:
     """Get application settings."""

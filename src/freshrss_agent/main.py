@@ -11,14 +11,34 @@ Backend options:
 
 Phase 2: Added MCP support via --mcp flag or USE_MCP env var.
 Step 4: Added Agent SDK support via --sdk flag.
+Phase 3: Added daily digest with Slack integration.
 """
 
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 
 from .agent import FreshRSSAgent
-from .config import get_settings
+from .config import Settings, get_settings
+
+# =============================================================================
+# Digest Prompt (Phase 3)
+# =============================================================================
+
+DIGEST_PROMPT = """Please generate today's RSS reading digest:
+
+1. First get ALL unread articles (use limit=100 or higher to get all)
+2. Generate a statistics summary at the top:
+   - Total unread count
+   - Count breakdown by source/feed
+3. Group articles by RSS source (feed name)
+4. For each article include:
+   - Title as a clickable Markdown link: [Title](URL)
+   - One-sentence summary of the content
+
+Output in Markdown format with proper headers and lists.
+"""
 
 
 def interactive_mode(agent: FreshRSSAgent) -> None:
@@ -126,25 +146,57 @@ def daily_digest(agent: FreshRSSAgent, output_format: str = "text") -> None:
     print(response)
 
 
-async def daily_digest_async(agent: FreshRSSAgent, output_format: str = "text") -> None:
+async def daily_digest_async(
+    agent: FreshRSSAgent,
+    settings: Settings,
+    send_slack: bool = False,
+    output_file: str | None = None,
+    quiet: bool = False,
+) -> str:
     """Generate a daily digest of unread articles (async version for MCP).
 
     Args:
         agent: Configured FreshRSSAgent instance
-        output_format: Output format (text, markdown)
+        settings: Application settings
+        send_slack: If True, send digest to Slack webhook
+        output_file: If set, save digest to this file path
+        quiet: If True, suppress terminal output
+
+    Returns:
+        The generated digest text
     """
-    print("Generating daily digest...\n")
+    if not quiet:
+        print("Generating daily digest...\n")
 
-    prompt = """Please generate today's RSS reading digest:
-1. First get all unread articles
-2. Categorize by source, provide a brief summary for each article
-3. Finally recommend the top 3 most worth reading articles for today"""
+    digest = await agent.chat_async(DIGEST_PROMPT)
 
-    if output_format == "markdown":
-        prompt += "\n\nPlease output in Markdown format."
+    # Output to terminal
+    if not quiet:
+        print(digest)
 
-    response = await agent.chat_async(prompt)
-    print(response)
+    # Save to file
+    if output_file:
+        Path(output_file).write_text(digest, encoding="utf-8")
+        if not quiet:
+            print(f"\nDigest saved to: {output_file}")
+
+    # Send to Slack
+    if send_slack:
+        if not settings.slack_webhook_url:
+            print("\nError: SLACK_WEBHOOK_URL not configured in .env")
+        else:
+            from .slack_client import SlackClient
+
+            client = SlackClient(settings.slack_webhook_url)
+            slack_text = client.format_for_slack(digest)
+            success = await client.send_message(slack_text)
+            if not quiet:
+                if success:
+                    print("\nDigest sent to Slack successfully!")
+                else:
+                    print("\nFailed to send digest to Slack")
+
+    return digest
 
 
 # =============================================================================
@@ -191,28 +243,58 @@ async def interactive_mode_sdk(settings) -> None:
                 print(f"\n[Error: {e}]\n")
 
 
-async def daily_digest_sdk(settings, output_format: str = "text") -> None:
+async def daily_digest_sdk(
+    settings: Settings,
+    send_slack: bool = False,
+    output_file: str | None = None,
+    quiet: bool = False,
+) -> str:
     """Generate a daily digest using Agent SDK.
 
     Args:
         settings: Application settings
-        output_format: Output format (text, markdown)
+        send_slack: If True, send digest to Slack webhook
+        output_file: If set, save digest to this file path
+        quiet: If True, suppress terminal output
+
+    Returns:
+        The generated digest text
     """
     from .agent_sdk import FreshRSSAgentSDK
 
-    print("Generating daily digest (Agent SDK)...\n")
+    if not quiet:
+        print("Generating daily digest (Agent SDK)...\n")
 
-    prompt = """Please generate today's RSS reading digest:
-1. First get all unread articles
-2. Categorize by source, provide a brief summary for each article
-3. Finally recommend the top 3 most worth reading articles for today"""
+    async with FreshRSSAgentSDK(settings, verbose=not quiet) as agent:
+        digest = await agent.chat(DIGEST_PROMPT)
 
-    if output_format == "markdown":
-        prompt += "\n\nPlease output in Markdown format."
+    # Output to terminal
+    if not quiet:
+        print(digest)
 
-    async with FreshRSSAgentSDK(settings, verbose=True) as agent:
-        response = await agent.chat(prompt)
-        print(response)
+    # Save to file
+    if output_file:
+        Path(output_file).write_text(digest, encoding="utf-8")
+        if not quiet:
+            print(f"\nDigest saved to: {output_file}")
+
+    # Send to Slack
+    if send_slack:
+        if not settings.slack_webhook_url:
+            print("\nError: SLACK_WEBHOOK_URL not configured in .env")
+        else:
+            from .slack_client import SlackClient
+
+            client = SlackClient(settings.slack_webhook_url)
+            slack_text = client.format_for_slack(digest)
+            success = await client.send_message(slack_text)
+            if not quiet:
+                if success:
+                    print("\nDigest sent to Slack successfully!")
+                else:
+                    print("\nFailed to send digest to Slack")
+
+    return digest
 
 
 def main() -> None:
@@ -227,7 +309,9 @@ Examples:
   freshrss-agent --sdk              # Start interactive mode (Agent SDK)
   freshrss-agent chat               # Start interactive mode
   freshrss-agent digest             # Generate daily digest
-  freshrss-agent digest --markdown  # Generate Markdown format digest
+  freshrss-agent digest --slack     # Generate and send to Slack
+  freshrss-agent digest --slack -q  # Send to Slack (quiet mode for cron)
+  freshrss-agent digest -o out.md   # Save digest to file
 
 Backend Modes:
   (default)   Direct API - Hand-written agent loop (agent.py)
@@ -237,6 +321,7 @@ Backend Modes:
 Environment Variables:
   USE_MCP=true                      # Enable MCP mode by default
   MCP_SERVER_URL=http://...         # MCP server URL
+  SLACK_WEBHOOK_URL=https://...     # Slack Incoming Webhook URL
 """,
     )
 
@@ -263,7 +348,25 @@ Environment Variables:
         "--markdown",
         "-m",
         action="store_true",
-        help="Output in Markdown format",
+        help="Output in Markdown format (legacy, now default)",
+    )
+    digest_parser.add_argument(
+        "--slack",
+        action="store_true",
+        help="Send digest to Slack (requires SLACK_WEBHOOK_URL in .env)",
+    )
+    digest_parser.add_argument(
+        "--output",
+        "-o",
+        type=str,
+        metavar="FILE",
+        help="Save digest to file",
+    )
+    digest_parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Suppress terminal output (useful for cron jobs)",
     )
 
     args = parser.parse_args()
@@ -296,10 +399,16 @@ Environment Variables:
 
 async def main_async(args, settings) -> None:
     """Async main for MCP mode."""
-    async with FreshRSSAgent(settings, verbose=True, use_mcp=True) as agent:
+    quiet = getattr(args, "quiet", False)
+    async with FreshRSSAgent(settings, verbose=not quiet, use_mcp=True) as agent:
         if args.command == "digest":
-            output_format = "markdown" if getattr(args, "markdown", False) else "text"
-            await daily_digest_async(agent, output_format)
+            await daily_digest_async(
+                agent,
+                settings,
+                send_slack=getattr(args, "slack", False),
+                output_file=getattr(args, "output", None),
+                quiet=quiet,
+            )
         else:
             # Default to interactive mode
             await interactive_mode_async(agent)
@@ -319,8 +428,12 @@ async def main_sdk(args, settings) -> None:
         sys.exit(1)
 
     if args.command == "digest":
-        output_format = "markdown" if getattr(args, "markdown", False) else "text"
-        await daily_digest_sdk(settings, output_format)
+        await daily_digest_sdk(
+            settings,
+            send_slack=getattr(args, "slack", False),
+            output_file=getattr(args, "output", None),
+            quiet=getattr(args, "quiet", False),
+        )
     else:
         # Default to interactive mode
         await interactive_mode_sdk(settings)
