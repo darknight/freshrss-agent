@@ -65,11 +65,17 @@ uv run freshrss-agent --mcp
 uv sync --extra agent-sdk  # Install SDK first
 uv run freshrss-agent --sdk
 
-# Generate daily digest
-uv run freshrss-agent digest
+# Generate daily digest (using Agent SDK)
+uv run freshrss-agent --sdk digest
 
-# Markdown format digest
-uv run freshrss-agent digest --markdown
+# Send digest to Slack
+uv run freshrss-agent --sdk digest --slack
+
+# Save digest to file
+uv run freshrss-agent --sdk digest --output ~/digest.md
+
+# Quiet mode for cron jobs
+uv run freshrss-agent --sdk digest --slack --quiet
 ```
 
 ## Project Structure
@@ -87,6 +93,7 @@ freshrss-agent/
 │   ├── tools.py             # Tool definitions and execution logic
 │   ├── freshrss_client.py   # FreshRSS API client
 │   ├── mcp_client.py        # MCP protocol client (Phase 2)
+│   ├── slack_client.py      # Slack webhook client (Phase 3)
 │   └── config.py            # Configuration management
 ├── examples/
 │   ├── 01_basic_tool_use.py         # Learn Tool Use basics
@@ -137,12 +144,13 @@ while True:
 | `MCP_SERVER_URL` | MCP server URL (Phase 2) |
 | `MCP_AUTH_TOKEN` | MCP authentication token (optional) |
 | `USE_MCP` | Enable MCP mode (true/false) |
+| `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL (Phase 3) |
 
 ## Implementation Phases
 
 - [x] Phase 1: Basic Agent (direct FreshRSS API calls)
 - [x] Phase 2: MCP client integration
-- [ ] Phase 3: Daily digest automation
+- [x] Phase 3: Daily digest with Slack integration
 
 ## License
 
